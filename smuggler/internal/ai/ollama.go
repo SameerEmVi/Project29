@@ -41,8 +41,15 @@ Test Type: %s
 Baseline: Status=%v, Body=%v bytes
 Test Response: Status=%v, Body=%v bytes
 
-Respond with ONLY valid JSON (no markdown, no explanation):
-{"is_vulnerable": bool, "techniques": [], "confidence": 0.0, "reasoning": "", "suspicious_signals": [], "recommendations": []}`,
+Output ONLY this exact JSON format (no markdown, no code blocks, no explanation, no comments):
+{
+"is_vulnerable": true,
+"techniques": ["CL.TE"],
+"confidence": 0.75,
+"reasoning": "Explanation here",
+"suspicious_signals": ["signal1", "signal2"],
+"recommendations": ["action1", "action2"]
+}`,
 		testType,
 		baseline["status"], baseline["body_len"],
 		testResponse["status"], testResponse["body_len"])
@@ -61,8 +68,10 @@ func (o *OllamaAnalyzer) SuggestPayloads(targetInfo map[string]string, previousR
 Target: %v
 Previous Results: %v
 
-Respond with ONLY valid JSON array (no markdown):
-[{"technique": "", "description": "", "payload_strategy": "", "priority": "", "rationale": ""}]`,
+Output ONLY this exact JSON format (no markdown, no code blocks, no explanation, no comments):
+[
+{"technique": "CL.TE", "description": "Content-Length vs Transfer-Encoding", "payload_strategy": "strategy_here", "priority": "high", "rationale": "rationale_here"}
+]`,
 		targetInfo, previousResults)
 
 	var suggestions []*PayloadSuggestion
@@ -88,7 +97,7 @@ func (o *OllamaAnalyzer) IdentifyTechnique(allTestResults map[string]map[string]
 	prompt := fmt.Sprintf(`Analyze HTTP Request Smuggling test results and identify the most likely vulnerability technique.
 Results: %v
 
-Respond with ONLY valid JSON (no markdown):
+Output ONLY this exact JSON (no markdown, no code blocks, no explanation, no comments):
 {"most_likely_technique": "CL.TE", "confidence": 0.85}`, allTestResults)
 
 	type Result struct {
@@ -102,6 +111,73 @@ Respond with ONLY valid JSON (no markdown):
 	}
 
 	return result.Technique, result.Confidence, nil
+}
+
+// cleanupJSON removes common formatting issues from LLM-generated JSON
+// Handles: comments, trailing commas, extra whitespace
+func cleanupJSON(jsonStr string) string {
+	var result []byte
+	inString := false
+	escape := false
+
+	for i := 0; i < len(jsonStr); i++ {
+		ch := jsonStr[i]
+
+		// Track if we're inside a string
+		if ch == '"' && !escape {
+			inString = !inString
+			result = append(result, ch)
+			escape = false
+			continue
+		}
+
+		// Handle escape sequences
+		if ch == '\\' && inString {
+			escape = !escape
+			result = append(result, ch)
+			continue
+		}
+		escape = false
+
+		// Skip comments outside strings (// style)
+		if !inString && ch == '/' && i+1 < len(jsonStr) && jsonStr[i+1] == '/' {
+			// Skip until end of line
+			for i < len(jsonStr) && jsonStr[i] != '\n' {
+				i++
+			}
+			continue
+		}
+
+		// Skip C-style comments /* */
+		if !inString && ch == '/' && i+1 < len(jsonStr) && jsonStr[i+1] == '*' {
+			i += 2
+			for i < len(jsonStr)-1 {
+				if jsonStr[i] == '*' && jsonStr[i+1] == '/' {
+					i += 2
+					break
+				}
+				i++
+			}
+			continue
+		}
+
+		// Remove trailing commas before } or ]
+		if ch == ',' {
+			// Look ahead for closing bracket
+			j := i + 1
+			for j < len(jsonStr) && (jsonStr[j] == ' ' || jsonStr[j] == '\n' || jsonStr[j] == '\t' || jsonStr[j] == '\r') {
+				j++
+			}
+			if j < len(jsonStr) && (jsonStr[j] == '}' || jsonStr[j] == ']') {
+				// Skip this comma
+				continue
+			}
+		}
+
+		result = append(result, ch)
+	}
+
+	return string(result)
 }
 
 // callOllama makes a request to Ollama API and parses JSON response
@@ -160,8 +236,12 @@ func (o *OllamaAnalyzer) callOllama(prompt string, dest interface{}) error {
 	}
 
 	jsonStr := content[startIdx:]
+	
+	// Clean up JSON: remove comments, trailing commas, etc.
+	jsonStr = cleanupJSON(jsonStr)
+	
 	if err := json.Unmarshal([]byte(jsonStr), dest); err != nil {
-		return fmt.Errorf("failed to parse JSON from Ollama: %w\nResponse: %s", err, jsonStr)
+		return fmt.Errorf("failed to parse JSON from Ollama: %w\nCleaned response: %s", err, jsonStr)
 	}
 
 	return nil
