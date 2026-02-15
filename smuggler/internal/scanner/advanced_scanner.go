@@ -70,6 +70,49 @@ func (as *AdvancedScanner) SetAIProvider(provider ai.Provider) *AdvancedScanner 
 	return as
 }
 
+// runAIAnalysis calls the AI provider to analyze a test result
+func (as *AdvancedScanner) runAIAnalysis(testType string, baseline, test *models.HTTPResponse, result *models.ScanResult) {
+	baseline_map := map[string]interface{}{
+		"status":    baseline.StatusCode,
+		"body_len":  len(baseline.Body),
+		"timing":    baseline.TimingMS,
+		"headers":   len(baseline.Headers),
+	}
+	
+	test_map := map[string]interface{}{
+		"status":    test.StatusCode,
+		"body_len":  len(test.Body),
+		"timing":    test.TimingMS,
+		"headers":   len(test.Headers),
+	}
+
+	aiResult, err := as.aiProvider.AnalyzeResponses(baseline_map, test_map, testType)
+	if err != nil {
+		fmt.Printf("    [AI Analysis Error: %v]\n", err)
+		return
+	}
+
+	if aiResult != nil && aiResult.Confidence > 0 {
+		fmt.Printf("\n    [AI Analysis - %s]\n", as.aiProvider.Name())
+		fmt.Printf("    Confidence: %.1f%%\n", aiResult.Confidence*100)
+		fmt.Printf("    Reasoning: %s\n", aiResult.Reasoning)
+		if len(aiResult.SuspiciousSignals) > 0 {
+			fmt.Printf("    Signals: %v\n", aiResult.SuspiciousSignals)
+		}
+		if len(aiResult.Recommendations) > 0 {
+			fmt.Printf("    Next Steps: %v\n", aiResult.Recommendations)
+		}
+		
+		// Update result with AI confidence if higher
+		if aiResult.Confidence > result.ConfidenceScore {
+			result.ConfidenceScore = aiResult.Confidence
+		}
+		if aiResult.IsVulnerable && !result.Suspicious {
+			result.Suspicious = true
+		}
+	}
+}
+
 // CaptureBaseline captures normal server behavior.
 func (as *AdvancedScanner) CaptureBaseline() error {
 	fmt.Printf("[*] Capturing baseline response for %s:%d\n", as.target, as.port)
@@ -151,6 +194,11 @@ func (as *AdvancedScanner) TestCLTE_GPOST() error {
 		ResponseTimeDiff: resp2.TimingMS - as.baselineResponse.TimingMS,
 		BaselineResponse: as.baselineResponse,
 		TestResponse:     resp2,
+	}
+
+	// Run AI analysis if provider available
+	if as.aiProvider != nil {
+		as.runAIAnalysis("CL.TE-GPOST", as.baselineResponse, resp2, result)
 	}
 
 	as.results = append(as.results, result)

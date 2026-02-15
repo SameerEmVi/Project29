@@ -28,13 +28,14 @@ type HTTPResponse struct {
 
 // ScanResult represents the final scan result for a target.
 type ScanResult struct {
-	Target          string
-	Technique       string        // e.g., "TE.CL", "CL.TE"
-	Suspicious      bool          // True if potential vulnerability detected
-	Reason          string        // Explanation of the suspicion
+	Target           string        // Target host
+	Technique        string        // e.g., "TE.CL", "CL.TE"
+	Suspicious       bool          // True if potential vulnerability detected
+	Reason           string        // Explanation of the suspicion
+	ConfidenceScore  float64       // Confidence level 0.0-1.0 (from detector or AI)
 	ResponseTimeDiff int64         // Timing difference from baseline (milliseconds)
 	BaselineResponse *HTTPResponse // The baseline response for comparison
-	TestResponse    *HTTPResponse  // The test response
+	TestResponse     *HTTPResponse  // The test response
 }
 
 // RequestConfig holds options for sending raw requests.
