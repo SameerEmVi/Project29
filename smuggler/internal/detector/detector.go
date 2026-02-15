@@ -202,6 +202,71 @@ func (d *Detector) AnalyzeMixedTE(target string, comparison *models.BaselineComp
 	return result
 }
 
+// AnalyzeObfuscatedTE analyzes for obfuscated Transfer-Encoding header exploitation.
+// This variant uses non-standard TE header values (e.g., "cow") to bypass proxies.
+func (d *Detector) AnalyzeObfuscatedTE(target string, comparison *models.BaselineComparison) *models.ScanResult {
+	result := &models.ScanResult{
+		Target:           target,
+		Technique:        "Obfuscated-TE",
+		BaselineResponse: comparison.Baseline,
+		TestResponse:     comparison.Test,
+	}
+
+	confidence := 0.0
+	signals := []string{}
+
+	// Signal 1: Status code changed to 400 (Bad Request)
+	if comparison.StatusCodeChanged && comparison.NewStatusCode == 400 {
+		confidence += 0.25
+		signals = append(signals, "Backend returned 400 (obfuscated TE rejection or malformed request)")
+	}
+
+	// Signal 2: Status code changed to 5xx
+	if comparison.StatusCodeChanged && comparison.NewStatusCode >= 500 {
+		confidence += 0.35
+		signals = append(signals, "Backend returned 5xx error (TE obfuscation parser confusion)")
+	}
+
+	// Signal 3: Response timing significantly decreased
+	if comparison.TimingDiffMS < -30 {
+		confidence += 0.15
+		signals = append(signals, fmt.Sprintf("Response %d ms faster (obfuscated TE caused early rejection)", -comparison.TimingDiffMS))
+	}
+
+	// Signal 4: Connection closed unexpectedly
+	if comparison.ConnectionBehaviorChanged && comparison.NewConnectionClosed {
+		confidence += 0.20
+		signals = append(signals, "Server closed connection (TE obfuscation parser failure)")
+	}
+
+	// Signal 5: Body size significantly reduced
+	if comparison.BodyChanged && comparison.BodySizeDiff < -200 {
+		confidence += 0.15
+		signals = append(signals, fmt.Sprintf("Response body %d bytes smaller (obfuscated TE caused content absorption)", -comparison.BodySizeDiff))
+	}
+
+	// Signal 6: Transfer-Encoding header removed
+	if _, exists := comparison.HeadersRemoved["Transfer-Encoding"]; exists {
+		confidence += 0.10
+		signals = append(signals, "Transfer-Encoding header removed (backend rejected obfuscation)")
+	}
+
+	if confidence > 1.0 {
+		confidence = 1.0
+	}
+
+	result.Suspicious = confidence >= d.confidenceThreshold
+	result.ResponseTimeDiff = comparison.TimingDiffMS
+
+	if result.Suspicious {
+		result.Reason = d.buildExplanation("Obfuscated-TE", confidence, signals)
+	} else {
+		result.Reason = fmt.Sprintf("Insufficient evidence (confidence: %.1f%% < %.1f%%)", confidence*100, d.confidenceThreshold*100)
+	}
+
+	return result
+}
+
 // buildExplanation creates a detailed explanation of the detection.
 func (d *Detector) buildExplanation(technique string, confidence float64, signals []string) string {
 	var explanation strings.Builder
@@ -223,6 +288,10 @@ func (d *Detector) buildExplanation(technique string, confidence float64, signal
 	case "Mixed-TE":
 		explanation.WriteString("\nTechnique: Multiple Transfer-Encoding headers with different handling.\n")
 		explanation.WriteString("The server may interpret TE headers ambiguously, causing parser desynchronization.")
+	case "Obfuscated-TE":
+		explanation.WriteString("\nTechnique: Non-standard Transfer-Encoding header values bypass proxies.\n")
+		explanation.WriteString("Front-end and backend may handle obfuscated TE values differently, causing desynchronization.\n")
+		explanation.WriteString("Example obfuscations: 'cow', 'x-chunked', 'chunked;q=0.5' - allowing request smuggling.")
 	}
 
 	return explanation.String()

@@ -85,6 +85,19 @@ func (g *Generator) GenerateTECLPayload(smoggledBody string) (string, error) {
 	return GenerateTECL(g.buildBaseRequest(), smoggledBody), nil
 }
 
+// GenerateObfuscatedTEPayload generates a CL.TE payload with obfuscated Transfer-Encoding headers.
+// This variant uses non-standard TE header values to bypass proxies and cause backend desynchronization.
+func (g *Generator) GenerateObfuscatedTEPayload(smoggledBody string, obfuscation string) (string, error) {
+	if smoggledBody == "" {
+		return "", fmt.Errorf("smuggled body cannot be empty")
+	}
+	if obfuscation == "" {
+		return "", fmt.Errorf("obfuscation value cannot be empty")
+	}
+
+	return GenerateObfuscatedTE(g.buildBaseRequest(), smoggledBody, obfuscation), nil
+}
+
 // GenerateBaseline generates a normal request with no smuggling attempt.
 // Use this for establishing baseline behavior.
 func (g *Generator) GenerateBaseline() string {

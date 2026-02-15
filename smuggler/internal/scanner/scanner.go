@@ -261,6 +261,56 @@ func (sc *Scanner) TestMixedTE() error {
 	return nil
 }
 
+// TestObfuscatedTE tests for obfuscated Transfer-Encoding header exploitation.
+// This technique uses non-standard TE header values (e.g., "cow") to bypass proxies.
+func (sc *Scanner) TestObfuscatedTE() error {
+	if sc.baselineResponse == nil {
+		return fmt.Errorf("baseline not captured; call CaptureBaseline first")
+	}
+
+	fmt.Printf("\n[*] Testing Obfuscated-TE (Transfer-Encoding with non-standard values)...\n")
+
+	gen := payload.NewGenerator(sc.target, sc.port)
+	gen.SetPath("/")
+	gen.AddHeader("Connection", "close")
+
+	// Test with "cow" obfuscation (common exploitation technique)
+	payloadStr, err := gen.GenerateObfuscatedTEPayload(
+		"POST / HTTP/1.1\r\nHost: "+sc.target+"\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 15\r\n\r\nx=1",
+		"cow",
+	)
+	if err != nil {
+		return fmt.Errorf("Obfuscated-TE payload generation failed: %w", err)
+	}
+
+	targetAddr := fmt.Sprintf("%s:%d", sc.target, sc.port)
+	testResp, err := sc.sender.SendRequest(targetAddr, payloadStr)
+	if err != nil {
+		return fmt.Errorf("Obfuscated-TE test send failed: %w", err)
+	}
+
+	fmt.Printf("    Response: %d | Timing: %d ms\n", testResp.StatusCode, testResp.TimingMS)
+
+	comparison := sc.baselineManager.CompareResponses(sc.baselineResponse, testResp)
+	result := sc.detector.AnalyzeObfuscatedTE(sc.target, comparison)
+	
+	// Run AI analysis if provider available
+	if sc.aiProvider != nil {
+		sc.runAIAnalysis("Obfuscated-TE", sc.baselineResponse, testResp, result)
+	}
+	
+	sc.results = append(sc.results, result)
+
+	fmt.Printf("    Result: %s\n", func() string {
+		if result.Suspicious {
+			return "SUSPICIOUS ✗"
+		}
+		return "CLEAN ✓"
+	}())
+
+	return nil
+}
+
 // Run executes the full scanning workflow.
 func (sc *Scanner) Run() error {
 	fmt.Printf("\n%s\n", strings.Repeat("=", 60))
@@ -281,6 +331,10 @@ func (sc *Scanner) Run() error {
 	}
 
 	if err := sc.TestMixedTE(); err != nil {
+		return err
+	}
+
+	if err := sc.TestObfuscatedTE(); err != nil {
 		return err
 	}
 
