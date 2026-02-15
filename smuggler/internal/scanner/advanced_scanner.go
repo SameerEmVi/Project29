@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"smuggler/internal/ai"
 	"smuggler/internal/baseline"
 	"smuggler/internal/detector"
 	"smuggler/internal/models"
@@ -19,6 +20,7 @@ type AdvancedScanner struct {
 	sender           *sender.RawSender
 	baselineManager  *baseline.Manager
 	detector         *detector.Detector
+	aiAnalyzer       *ai.AIAnalyzer
 	baselineResponse *models.HTTPResponse
 	results          []*models.ScanResult
 	report           *detector.DetectionReport
@@ -53,6 +55,12 @@ func (as *AdvancedScanner) SetTLS(useTLS bool) *AdvancedScanner {
 // SetInsecureTLS allows insecure TLS connections.
 func (as *AdvancedScanner) SetInsecureTLS(insecure bool) *AdvancedScanner {
 	as.sender.SetInsecureTLS(insecure)
+	return as
+}
+
+// SetAIAnalyzer sets an AI analyzer for intelligent response analysis.
+func (as *AdvancedScanner) SetAIAnalyzer(analyzer *ai.AIAnalyzer) *AdvancedScanner {
+	as.aiAnalyzer = analyzer
 	return as
 }
 

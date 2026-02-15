@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
 
+	"smuggler/internal/ai"
 	"smuggler/internal/scanner"
 )
 
@@ -17,6 +19,8 @@ func main() {
 	insecure := flag.Bool("insecure", false, "Skip TLS certificate verification (for lab/testing only)")
 	verbose := flag.Bool("v", false, "Verbose output")
 	advanced := flag.Bool("advanced", false, "Use advanced multi-request detection (for GPOST attacks)")
+	useAI := flag.Bool("ai", false, "Enable AI-powered analysis (requires -api-key)")
+	apiKey := flag.String("api-key", "", "OpenAI API key for AI analysis")
 
 	flag.Parse()
 
@@ -31,6 +35,14 @@ func main() {
 
 	if *confidence < 0 || *confidence > 1 {
 		log.Fatal("Confidence threshold must be between 0.0 and 1.0")
+	}
+
+	// Check for AI requirements
+	if *useAI && *apiKey == "" {
+		apiKey = flag.String("api-key", os.Getenv("OPENAI_API_KEY"), "OpenAI API key for AI analysis")
+		if *apiKey == "" || os.Getenv("OPENAI_API_KEY") == "" {
+			log.Fatal("AI mode requires -api-key or OPENAI_API_KEY environment variable")
+		}
 	}
 
 	// Auto-detect HTTPS if port is 443
@@ -49,18 +61,27 @@ func main() {
 		if *advanced {
 			fmt.Printf("[+] Using advanced multi-request scanner\n")
 		}
+		if *useAI {
+			fmt.Printf("[+] Using AI-powered analysis with OpenAI\n")
+		}
 		fmt.Println()
+	}
+
+	// Create AI analyzer if enabled
+	var aiAnalyzer *ai.AIAnalyzer
+	if *useAI {
+		aiAnalyzer = ai.NewAIAnalyzer(*apiKey)
 	}
 
 	// Choose scanner mode
 	if *advanced {
-		runAdvancedScanner(target, port, confidence, https, insecure)
+		runAdvancedScanner(target, port, confidence, https, insecure, aiAnalyzer)
 	} else {
-		runStandardScanner(target, port, confidence, https, insecure)
+		runStandardScanner(target, port, confidence, https, insecure, aiAnalyzer)
 	}
 }
 
-func runStandardScanner(target *string, port *int, confidence *float64, https *bool, insecure *bool) {
+func runStandardScanner(target *string, port *int, confidence *float64, https *bool, insecure *bool, aiAnalyzer *ai.AIAnalyzer) {
 	// PHASE 5: SCANNER ENGINE
 	// Create and configure scanner
 	s := scanner.NewScanner(*target, *port)
@@ -71,6 +92,11 @@ func runStandardScanner(target *string, port *int, confidence *float64, https *b
 		if *insecure {
 			s.SetInsecureTLS(true)
 		}
+	}
+
+	// Set AI analyzer if enabled
+	if aiAnalyzer != nil {
+		s.SetAIAnalyzer(aiAnalyzer)
 	}
 
 	// Run the full scan
@@ -93,7 +119,7 @@ func runStandardScanner(target *string, port *int, confidence *float64, https *b
 	}
 }
 
-func runAdvancedScanner(target *string, port *int, confidence *float64, https *bool, insecure *bool) {
+func runAdvancedScanner(target *string, port *int, confidence *float64, https *bool, insecure *bool, aiAnalyzer *ai.AIAnalyzer) {
 	// Advanced multi-request scanner
 	s := scanner.NewAdvancedScanner(*target, *port)
 	s.SetConfidenceThreshold(*confidence)
@@ -103,6 +129,11 @@ func runAdvancedScanner(target *string, port *int, confidence *float64, https *b
 		if *insecure {
 			s.SetInsecureTLS(true)
 		}
+	}
+
+	// Set AI analyzer if enabled
+	if aiAnalyzer != nil {
+		s.SetAIAnalyzer(aiAnalyzer)
 	}
 
 	// Run the advanced scan
