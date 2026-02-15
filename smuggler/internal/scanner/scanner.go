@@ -19,7 +19,7 @@ type Scanner struct {
 	sender           *sender.RawSender
 	baselineManager  *baseline.Manager
 	detector         *detector.Detector
-	aiAnalyzer       *ai.AIAnalyzer
+	aiProvider       ai.Provider
 	baselineResponse *models.HTTPResponse
 	results          []*models.ScanResult
 	report           *detector.DetectionReport
@@ -59,7 +59,13 @@ func (sc *Scanner) SetInsecureTLS(insecure bool) *Scanner {
 
 // SetAIAnalyzer sets an AI analyzer for intelligent response analysis.
 func (sc *Scanner) SetAIAnalyzer(analyzer *ai.AIAnalyzer) *Scanner {
-	sc.aiAnalyzer = analyzer
+	sc.aiProvider = analyzer
+	return sc
+}
+
+// SetAIProvider sets an AI provider (OpenAI, Ollama, etc.) for intelligent response analysis.
+func (sc *Scanner) SetAIProvider(provider ai.Provider) *Scanner {
+	sc.aiProvider = provider
 	return sc
 }
 

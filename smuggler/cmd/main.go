@@ -19,8 +19,13 @@ func main() {
 	insecure := flag.Bool("insecure", false, "Skip TLS certificate verification (for lab/testing only)")
 	verbose := flag.Bool("v", false, "Verbose output")
 	advanced := flag.Bool("advanced", false, "Use advanced multi-request detection (for GPOST attacks)")
-	useAI := flag.Bool("ai", false, "Enable AI-powered analysis (requires -api-key)")
+	
+	// AI flags
+	useAI := flag.Bool("ai", false, "Enable AI-powered analysis")
+	aiBackend := flag.String("ai-backend", "openai", "AI backend: openai or ollama")
 	apiKey := flag.String("api-key", "", "OpenAI API key for AI analysis")
+	ollamaEndpoint := flag.String("ollama-endpoint", "http://localhost:11434", "Ollama API endpoint")
+	ollamaModel := flag.String("ollama-model", "llama2", "Ollama model name (llama2, mistral, neural-chat, etc.)")
 
 	flag.Parse()
 
@@ -37,11 +42,21 @@ func main() {
 		log.Fatal("Confidence threshold must be between 0.0 and 1.0")
 	}
 
-	// Check for AI requirements
-	if *useAI && *apiKey == "" {
-		apiKey = flag.String("api-key", os.Getenv("OPENAI_API_KEY"), "OpenAI API key for AI analysis")
-		if *apiKey == "" || os.Getenv("OPENAI_API_KEY") == "" {
-			log.Fatal("AI mode requires -api-key or OPENAI_API_KEY environment variable")
+	// Setup AI provider if enabled
+	var aiProvider ai.Provider
+	if *useAI {
+		if *aiBackend == "openai" {
+			if *apiKey == "" {
+				*apiKey = os.Getenv("OPENAI_API_KEY")
+			}
+			if *apiKey == "" {
+				log.Fatal("OpenAI backend requires -api-key or OPENAI_API_KEY environment variable")
+			}
+			aiProvider = ai.NewAIAnalyzer(*apiKey)
+		} else if *aiBackend == "ollama" {
+			aiProvider = ai.NewOllamaAnalyzer(*ollamaEndpoint, *ollamaModel)
+		} else {
+			log.Fatalf("Unknown AI backend: %s (use 'openai' or 'ollama')", *aiBackend)
 		}
 	}
 
@@ -61,27 +76,21 @@ func main() {
 		if *advanced {
 			fmt.Printf("[+] Using advanced multi-request scanner\n")
 		}
-		if *useAI {
-			fmt.Printf("[+] Using AI-powered analysis with OpenAI\n")
+		if *useAI && aiProvider != nil {
+			fmt.Printf("[+] AI-powered analysis enabled: %s\n", aiProvider.Name())
 		}
 		fmt.Println()
 	}
 
-	// Create AI analyzer if enabled
-	var aiAnalyzer *ai.AIAnalyzer
-	if *useAI {
-		aiAnalyzer = ai.NewAIAnalyzer(*apiKey)
-	}
-
 	// Choose scanner mode
 	if *advanced {
-		runAdvancedScanner(target, port, confidence, https, insecure, aiAnalyzer)
+		runAdvancedScanner(target, port, confidence, https, insecure, aiProvider)
 	} else {
-		runStandardScanner(target, port, confidence, https, insecure, aiAnalyzer)
+		runStandardScanner(target, port, confidence, https, insecure, aiProvider)
 	}
 }
 
-func runStandardScanner(target *string, port *int, confidence *float64, https *bool, insecure *bool, aiAnalyzer *ai.AIAnalyzer) {
+func runStandardScanner(target *string, port *int, confidence *float64, https *bool, insecure *bool, aiProvider ai.Provider) {
 	// PHASE 5: SCANNER ENGINE
 	// Create and configure scanner
 	s := scanner.NewScanner(*target, *port)
@@ -94,9 +103,9 @@ func runStandardScanner(target *string, port *int, confidence *float64, https *b
 		}
 	}
 
-	// Set AI analyzer if enabled
-	if aiAnalyzer != nil {
-		s.SetAIAnalyzer(aiAnalyzer)
+	// Set AI provider if enabled
+	if aiProvider != nil {
+		s.SetAIProvider(aiProvider)
 	}
 
 	// Run the full scan
@@ -119,7 +128,7 @@ func runStandardScanner(target *string, port *int, confidence *float64, https *b
 	}
 }
 
-func runAdvancedScanner(target *string, port *int, confidence *float64, https *bool, insecure *bool, aiAnalyzer *ai.AIAnalyzer) {
+func runAdvancedScanner(target *string, port *int, confidence *float64, https *bool, insecure *bool, aiProvider ai.Provider) {
 	// Advanced multi-request scanner
 	s := scanner.NewAdvancedScanner(*target, *port)
 	s.SetConfidenceThreshold(*confidence)
@@ -131,9 +140,9 @@ func runAdvancedScanner(target *string, port *int, confidence *float64, https *b
 		}
 	}
 
-	// Set AI analyzer if enabled
-	if aiAnalyzer != nil {
-		s.SetAIAnalyzer(aiAnalyzer)
+	// Set AI provider if enabled
+	if aiProvider != nil {
+		s.SetAIProvider(aiProvider)
 	}
 
 	// Run the advanced scan

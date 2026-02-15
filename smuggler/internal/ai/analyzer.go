@@ -41,6 +41,11 @@ func NewAIAnalyzer(apiKey string) *AIAnalyzer {
 	}
 }
 
+// Name returns the provider name
+func (a *AIAnalyzer) Name() string {
+	return "OpenAI"
+}
+
 // AnalyzeResponses uses AI to identify smuggling patterns
 func (a *AIAnalyzer) AnalyzeResponses(baseline, testResponse map[string]interface{}, testType string) (*AnalysisResult, error) {
 	prompt := fmt.Sprintf(`Analyze if these HTTP responses indicate request smuggling:
