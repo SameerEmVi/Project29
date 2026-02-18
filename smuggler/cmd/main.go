@@ -26,7 +26,7 @@ func main() {
 	insecure := flag.Bool("insecure", false, "Skip TLS certificate verification (for lab/testing only)")
 	verbose := flag.Bool("v", false, "Verbose output")
 	_ = flag.Bool("advanced", false, "(deprecated)")
-	
+
 	// AI flags
 	useAI := flag.Bool("ai", false, "Enable AI-powered analysis")
 	aiBackend := flag.String("ai-backend", "openai", "AI backend: openai or ollama")
@@ -164,7 +164,7 @@ func main() {
 				fmt.Printf("[+] WARNING: TLS certificate verification disabled\n")
 			}
 		}
-        
+
 		if *useAI && aiProvider != nil {
 			fmt.Printf("[+] AI-powered analysis enabled: %s\n", aiProvider.Name())
 		}
@@ -195,7 +195,3 @@ func main() {
 		}
 	}
 }
-
-
-
-

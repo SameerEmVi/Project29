@@ -112,12 +112,12 @@ func (sc *Scanner) TestCLTE() error {
 
 	comparison := sc.baselineManager.CompareResponses(sc.baselineResponse, testResp)
 	result := sc.detector.AnalyzeCLTE(sc.target, comparison)
-	
+
 	// Run AI analysis if provider available
 	if sc.aiProvider != nil {
 		sc.runAIAnalysis("CL.TE", sc.baselineResponse, testResp, result)
 	}
-	
+
 	sc.results = append(sc.results, result)
 
 	fmt.Printf("    Result: %s\n", func() string {
@@ -133,17 +133,17 @@ func (sc *Scanner) TestCLTE() error {
 // runAIAnalysis calls the AI provider to analyze a test result
 func (sc *Scanner) runAIAnalysis(testType string, baseline, test *models.HTTPResponse, result *models.ScanResult) {
 	baseline_map := map[string]interface{}{
-		"status":    baseline.StatusCode,
-		"body_len":  len(baseline.Body),
-		"timing":    baseline.TimingMS,
-		"headers":   len(baseline.Headers),
+		"status":   baseline.StatusCode,
+		"body_len": len(baseline.Body),
+		"timing":   baseline.TimingMS,
+		"headers":  len(baseline.Headers),
 	}
-	
+
 	test_map := map[string]interface{}{
-		"status":    test.StatusCode,
-		"body_len":  len(test.Body),
-		"timing":    test.TimingMS,
-		"headers":   len(test.Headers),
+		"status":   test.StatusCode,
+		"body_len": len(test.Body),
+		"timing":   test.TimingMS,
+		"headers":  len(test.Headers),
 	}
 
 	aiResult, err := sc.aiProvider.AnalyzeResponses(baseline_map, test_map, testType)
@@ -162,7 +162,7 @@ func (sc *Scanner) runAIAnalysis(testType string, baseline, test *models.HTTPRes
 		if len(aiResult.Recommendations) > 0 {
 			fmt.Printf("    Next Steps: %v\n", aiResult.Recommendations)
 		}
-		
+
 		// Update result with AI confidence if higher
 		if aiResult.Confidence > result.ConfidenceScore {
 			result.ConfidenceScore = aiResult.Confidence
@@ -200,12 +200,12 @@ func (sc *Scanner) TestTECL() error {
 
 	comparison := sc.baselineManager.CompareResponses(sc.baselineResponse, testResp)
 	result := sc.detector.AnalyzeTECL(sc.target, comparison)
-	
+
 	// Run AI analysis if provider available
 	if sc.aiProvider != nil {
 		sc.runAIAnalysis("TE.CL", sc.baselineResponse, testResp, result)
 	}
-	
+
 	sc.results = append(sc.results, result)
 
 	fmt.Printf("    Result: %s\n", func() string {
@@ -243,12 +243,12 @@ func (sc *Scanner) TestMixedTE() error {
 
 	comparison := sc.baselineManager.CompareResponses(sc.baselineResponse, testResp)
 	result := sc.detector.AnalyzeMixedTE(sc.target, comparison)
-	
+
 	// Run AI analysis if provider available
 	if sc.aiProvider != nil {
 		sc.runAIAnalysis("Mixed-TE", sc.baselineResponse, testResp, result)
 	}
-	
+
 	sc.results = append(sc.results, result)
 
 	fmt.Printf("    Result: %s\n", func() string {
@@ -293,12 +293,12 @@ func (sc *Scanner) TestObfuscatedTE() error {
 
 	comparison := sc.baselineManager.CompareResponses(sc.baselineResponse, testResp)
 	result := sc.detector.AnalyzeObfuscatedTE(sc.target, comparison)
-	
+
 	// Run AI analysis if provider available
 	if sc.aiProvider != nil {
 		sc.runAIAnalysis("Obfuscated-TE", sc.baselineResponse, testResp, result)
 	}
-	
+
 	sc.results = append(sc.results, result)
 
 	fmt.Printf("    Result: %s\n", func() string {
