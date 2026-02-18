@@ -311,6 +311,84 @@ func (sc *Scanner) TestObfuscatedTE() error {
 	return nil
 }
 
+func (sc *Scanner) TestCLTE_GPOST() error {
+	if sc.baselineResponse == nil {
+		return fmt.Errorf("baseline not captured; call CaptureBaseline first")
+	}
+
+	fmt.Printf("\n[*] Testing CL.TE GPOST poisoning (multi-request attack)...\n")
+
+	targetAddr := fmt.Sprintf("%s:%d", sc.target, sc.port)
+
+	fmt.Printf("    [1] Sending smuggling payload...\n")
+	smugglePayload := payload.CL_TE_GPOST_ATTACK(sc.target, sc.port)
+	resp1, err := sc.sender.SendRequest(targetAddr, smugglePayload)
+	if err != nil {
+		return fmt.Errorf("smuggling payload send failed: %w", err)
+	}
+	fmt.Printf("        Response: %d | Timing: %d ms\n", resp1.StatusCode, resp1.TimingMS)
+
+	fmt.Printf("    [2] Sending probe request after smuggling...\n")
+	probePayload := payload.ProbeRequestAfterPoison(sc.target, sc.port)
+	resp2, err := sc.sender.SendRequest(targetAddr, probePayload)
+	if err != nil {
+		return fmt.Errorf("probe request send failed: %w", err)
+	}
+	fmt.Printf("        Response: %d | Timing: %d ms\n", resp2.StatusCode, resp2.TimingMS)
+
+	fmt.Printf("    [3] Analyzing probe response for poisoning...\n")
+
+	var suspicious bool
+	var reason string
+
+	if strings.Contains(strings.ToUpper(resp2.Raw), "GPOST") {
+		suspicious = true
+		reason = "Probe response contains 'GPOST' method - request successfully poisoned!"
+		fmt.Printf("        ✗ SUSPICIOUS: Response contains 'GPOST' indicator\n")
+	} else if strings.Contains(strings.ToUpper(resp2.Raw), "UNRECOGNIZED METHOD") {
+		suspicious = true
+		reason = "Probe response indicates unrecognized method - likely poisoned request"
+		fmt.Printf("        ✗ SUSPICIOUS: Response mentions unrecognized method\n")
+	} else if resp2.StatusCode == 405 || resp2.StatusCode == 400 {
+		if resp2.StatusCode != sc.baselineResponse.StatusCode {
+			suspicious = true
+			reason = fmt.Sprintf("Probe returned %d (baseline was %d) - possible poisoning", resp2.StatusCode, sc.baselineResponse.StatusCode)
+			fmt.Printf("        ~ POSSIBLE: Status code changed after smuggling\n")
+		}
+	}
+
+	result := &models.ScanResult{
+		Target:           sc.target,
+		Technique:        "CL.TE-GPOST",
+		Suspicious:       suspicious,
+		Reason:           reason,
+		ResponseTimeDiff: resp2.TimingMS - sc.baselineResponse.TimingMS,
+		BaselineResponse: sc.baselineResponse,
+		TestResponse:     resp2,
+	}
+
+	if sc.aiProvider != nil {
+		sc.runAIAnalysis("CL.TE-GPOST", sc.baselineResponse, resp2, result)
+	}
+
+	sc.results = append(sc.results, result)
+
+	fmt.Printf("    Result: %s\n", func() string {
+		if result.Suspicious {
+			return "SUSPICIOUS ✗"
+		}
+		return "UNCLEAR ~"
+	}())
+
+	if len(resp2.Body) > 0 && len(resp2.Body) < 500 {
+		fmt.Printf("    Response Body Preview:\n%s\n", resp2.Body)
+	} else if len(resp2.Body) > 0 {
+		fmt.Printf("    Response Body (first 300 chars):\n%s...\n", resp2.Body[:300])
+	}
+
+	return nil
+}
+
 // Run executes the full scanning workflow.
 func (sc *Scanner) Run() error {
 	fmt.Printf("\n%s\n", strings.Repeat("=", 60))
@@ -335,6 +413,10 @@ func (sc *Scanner) Run() error {
 	}
 
 	if err := sc.TestObfuscatedTE(); err != nil {
+		return err
+	}
+
+	if err := sc.TestCLTE_GPOST(); err != nil {
 		return err
 	}
 

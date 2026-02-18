@@ -20,12 +20,12 @@ func main() {
 	target := flag.String("target", "", "Target host or URL to scan (e.g. example.com or https://example.com:8443)")
 	targets := flag.String("targets", "", "Comma-separated list of targets (hostnames or URLs)")
 	inputFile := flag.String("input-file", "", "Path to file containing targets (one per line)")
-	port := flag.Int("port", 80, "Target port")
+	port := flag.Int("port", 443, "Target port")
 	confidence := flag.Float64("confidence", 0.5, "Minimum confidence threshold (0.0-1.0)")
 	https := flag.Bool("https", false, "Use HTTPS/TLS connection")
 	insecure := flag.Bool("insecure", false, "Skip TLS certificate verification (for lab/testing only)")
 	verbose := flag.Bool("v", false, "Verbose output")
-	advanced := flag.Bool("advanced", false, "Use advanced multi-request detection (for GPOST attacks)")
+	_ = flag.Bool("advanced", false, "(deprecated)")
 	
 	// AI flags
 	useAI := flag.Bool("ai", false, "Enable AI-powered analysis")
@@ -89,7 +89,6 @@ func main() {
 		log.Fatal("Confidence threshold must be between 0.0 and 1.0")
 	}
 
-	// Setup AI provider if enabled
 	var aiProvider ai.Provider
 	if *useAI {
 		if *aiBackend == "openai" {
@@ -165,9 +164,7 @@ func main() {
 				fmt.Printf("[+] WARNING: TLS certificate verification disabled\n")
 			}
 		}
-		if *advanced {
-			fmt.Printf("[+] Using advanced multi-request scanner\n")
-		}
+        
 		if *useAI && aiProvider != nil {
 			fmt.Printf("[+] AI-powered analysis enabled: %s\n", aiProvider.Name())
 		}
@@ -193,11 +190,7 @@ func main() {
 		pp := p
 		thttps := useTLS
 
-		if *advanced {
-			runAdvancedScanner(&t, &pp, confidence, &thttps, insecure, aiProvider)
-		} else {
-			runStandardScanner(&t, &pp, confidence, &thttps, insecure, aiProvider)
-		}
+		runStandardScanner(&t, &pp, confidence, &thttps, insecure, aiProvider)
 	}
 }
 
@@ -239,39 +232,4 @@ func runStandardScanner(target *string, port *int, confidence *float64, https *b
 	}
 }
 
-func runAdvancedScanner(target *string, port *int, confidence *float64, https *bool, insecure *bool, aiProvider ai.Provider) {
-	// Advanced multi-request scanner
-	s := scanner.NewAdvancedScanner(*target, *port)
-	s.SetConfidenceThreshold(*confidence)
 
-	if *https {
-		s.SetTLS(true)
-		if *insecure {
-			s.SetInsecureTLS(true)
-		}
-	}
-
-	// Set AI provider if enabled
-	if aiProvider != nil {
-		s.SetAIProvider(aiProvider)
-	}
-
-	// Run the advanced scan
-	if err := s.Run(); err != nil {
-		log.Fatalf("[!] Scan failed: %v\n", err)
-	}
-
-	// Print the report
-	s.PrintReport()
-
-	// Print summary
-	fmt.Printf("\n%s\n", s.Summary())
-
-	// Exit with appropriate code
-	if s.IsVulnerable() {
-		fmt.Println("\n[!] VULNERABLE SERVER DETECTED")
-		fmt.Printf("[!] Most likely technique: %s\n", s.GetMostLikelyTechnique())
-	} else {
-		fmt.Println("\n[✓] No confirmed vulnerabilities")
-	}
-}
