@@ -12,14 +12,12 @@ type Detector struct {
 	confidenceThreshold float64
 }
 
-// NewDetector creates a new detector with default settings.
 func NewDetector() *Detector {
 	return &Detector{
 		confidenceThreshold: 0.5,
 	}
 }
 
-// SetConfidenceThreshold sets the minimum confidence level (0.0-1.0) to report findings.
 func (d *Detector) SetConfidenceThreshold(threshold float64) *Detector {
 	if threshold < 0 {
 		threshold = 0
@@ -31,7 +29,50 @@ func (d *Detector) SetConfidenceThreshold(threshold float64) *Detector {
 	return d
 }
 
-// AnalyzeCLTE analyzes a comparison for CL.TE (Content-Length / Transfer-Encoding) patterns.
+// ---------- Helpers ----------
+
+func headerExistsCaseInsensitive(headers map[string]string, target string) bool {
+	for k := range headers {
+		if strings.EqualFold(k, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func finalizeResult(
+	d *Detector,
+	result *models.ScanResult,
+	confidence float64,
+	strongSignal bool,
+	comparison *models.BaselineComparison,
+	technique string,
+	signals []string,
+) *models.ScanResult {
+
+	if confidence > 1.0 {
+		confidence = 1.0
+	}
+
+	result.Confidence = confidence
+	result.Suspicious = strongSignal && confidence >= d.confidenceThreshold
+	result.ResponseTimeDiff = comparison.TimingDiffMS
+
+	if result.Suspicious {
+		result.Reason = d.buildExplanation(technique, confidence, signals)
+	} else {
+		result.Reason = fmt.Sprintf(
+			"Insufficient evidence (confidence: %.1f%% < %.1f%%)",
+			confidence*100,
+			d.confidenceThreshold*100,
+		)
+	}
+
+	return result
+}
+
+// ---------- CL.TE ----------
+
 func (d *Detector) AnalyzeCLTE(target string, comparison *models.BaselineComparison) *models.ScanResult {
 	result := &models.ScanResult{
 		Target:           target,
@@ -42,60 +83,48 @@ func (d *Detector) AnalyzeCLTE(target string, comparison *models.BaselineCompari
 
 	confidence := 0.0
 	signals := []string{}
+	strongSignal := false
 
-	// Signal 1: Status code changed to 400 (Bad Request)
 	if comparison.StatusCodeChanged && comparison.NewStatusCode == 400 {
 		confidence += 0.25
+		strongSignal = true
 		signals = append(signals, "Backend returned 400 (malformed request detection)")
 	}
 
-	// Signal 2: Status code changed to 5xx
 	if comparison.StatusCodeChanged && comparison.NewStatusCode >= 500 {
 		confidence += 0.35
+		strongSignal = true
 		signals = append(signals, "Backend returned 5xx error (possible parser confusion)")
 	}
 
-	// Signal 3: Response timing significantly decreased
 	if comparison.TimingDiffMS < -30 {
 		confidence += 0.15
-		signals = append(signals, fmt.Sprintf("Response %d ms faster (possible early rejection)", -comparison.TimingDiffMS))
+		signals = append(signals,
+			fmt.Sprintf("Response %d ms faster (possible early rejection)", -comparison.TimingDiffMS))
 	}
 
-	// Signal 4: Connection closed unexpectedly
 	if comparison.ConnectionBehaviorChanged && comparison.NewConnectionClosed {
 		confidence += 0.20
+		strongSignal = true
 		signals = append(signals, "Server closed connection (possible state confusion)")
 	}
 
-	// Signal 5: Body size significantly reduced
 	if comparison.BodyChanged && comparison.BodySizeDiff < -200 {
 		confidence += 0.15
-		signals = append(signals, fmt.Sprintf("Response body %d bytes smaller (possible content absorption)", -comparison.BodySizeDiff))
+		signals = append(signals,
+			fmt.Sprintf("Response body %d bytes smaller (possible content absorption)", -comparison.BodySizeDiff))
 	}
 
-	// Signal 6: Transfer-Encoding header removed
-	if _, exists := comparison.HeadersRemoved["Transfer-Encoding"]; exists {
+	if headerExistsCaseInsensitive(comparison.HeadersRemoved, "Transfer-Encoding") {
 		confidence += 0.10
 		signals = append(signals, "Transfer-Encoding header removed by backend")
 	}
 
-	if confidence > 1.0 {
-		confidence = 1.0
-	}
-
-	result.Suspicious = confidence >= d.confidenceThreshold
-	result.ResponseTimeDiff = comparison.TimingDiffMS
-
-	if result.Suspicious {
-		result.Reason = d.buildExplanation("CL.TE", confidence, signals)
-	} else {
-		result.Reason = fmt.Sprintf("Insufficient evidence (confidence: %.1f%% < %.1f%%)", confidence*100, d.confidenceThreshold*100)
-	}
-
-	return result
+	return finalizeResult(d, result, confidence, strongSignal, comparison, "CL.TE", signals)
 }
 
-// AnalyzeTECL analyzes a comparison for TE.CL (Transfer-Encoding / Content-Length) patterns.
+// ---------- TE.CL ----------
+
 func (d *Detector) AnalyzeTECL(target string, comparison *models.BaselineComparison) *models.ScanResult {
 	result := &models.ScanResult{
 		Target:           target,
@@ -106,60 +135,48 @@ func (d *Detector) AnalyzeTECL(target string, comparison *models.BaselineCompari
 
 	confidence := 0.0
 	signals := []string{}
+	strongSignal := false
 
-	// Signal 1: Status code changed to 400 (Bad Request)
 	if comparison.StatusCodeChanged && comparison.NewStatusCode == 400 {
 		confidence += 0.25
+		strongSignal = true
 		signals = append(signals, "Backend returned 400 (parsing error)")
 	}
 
-	// Signal 2: Status code changed to 5xx
 	if comparison.StatusCodeChanged && comparison.NewStatusCode >= 500 {
 		confidence += 0.35
+		strongSignal = true
 		signals = append(signals, "Backend returned 5xx error (server confusion)")
 	}
 
-	// Signal 3: Response timing significantly increased
 	if comparison.TimingDiffMS > 1000 {
 		confidence += 0.25
-		signals = append(signals, fmt.Sprintf("Response %d ms slower (possible chunk reassembly delay)", comparison.TimingDiffMS))
+		signals = append(signals,
+			fmt.Sprintf("Response %d ms slower (possible chunk reassembly delay)", comparison.TimingDiffMS))
 	}
 
-	// Signal 4: Connection closed unexpectedly
 	if comparison.ConnectionBehaviorChanged && comparison.NewConnectionClosed {
 		confidence += 0.20
+		strongSignal = true
 		signals = append(signals, "Server closed connection (chunked parsing failure)")
 	}
 
-	// Signal 5: Body size changed significantly
 	if comparison.BodyChanged {
 		confidence += 0.10
-		signals = append(signals, fmt.Sprintf("Response body changed by %d bytes", comparison.BodySizeDiff))
+		signals = append(signals,
+			fmt.Sprintf("Response body changed by %d bytes", comparison.BodySizeDiff))
 	}
 
-	// Signal 6: Content-Length header added
-	if _, exists := comparison.HeadersAdded["Content-Length"]; exists {
+	if headerExistsCaseInsensitive(comparison.HeadersAdded, "Content-Length") {
 		confidence += 0.10
 		signals = append(signals, "Content-Length header added by backend")
 	}
 
-	if confidence > 1.0 {
-		confidence = 1.0
-	}
-
-	result.Suspicious = confidence >= d.confidenceThreshold
-	result.ResponseTimeDiff = comparison.TimingDiffMS
-
-	if result.Suspicious {
-		result.Reason = d.buildExplanation("TE.CL", confidence, signals)
-	} else {
-		result.Reason = fmt.Sprintf("Insufficient evidence (confidence: %.1f%% < %.1f%%)", confidence*100, d.confidenceThreshold*100)
-	}
-
-	return result
+	return finalizeResult(d, result, confidence, strongSignal, comparison, "TE.CL", signals)
 }
 
-// AnalyzeMixedTE analyzes for mixed Transfer-Encoding header exploitation.
+// ---------- Mixed TE ----------
+
 func (d *Detector) AnalyzeMixedTE(target string, comparison *models.BaselineComparison) *models.ScanResult {
 	result := &models.ScanResult{
 		Target:           target,
@@ -170,40 +187,31 @@ func (d *Detector) AnalyzeMixedTE(target string, comparison *models.BaselineComp
 
 	confidence := 0.0
 	signals := []string{}
+	strongSignal := false
 
 	if comparison.StatusCodeChanged && comparison.NewStatusCode == 400 {
 		confidence += 0.30
+		strongSignal = true
 		signals = append(signals, "Backend rejected mixed TE header")
 	}
 
 	if comparison.StatusCodeChanged && comparison.NewStatusCode >= 500 {
 		confidence += 0.40
+		strongSignal = true
 		signals = append(signals, "Server error from TE header ambiguity")
 	}
 
 	if comparison.ConnectionBehaviorChanged && comparison.NewConnectionClosed {
 		confidence += 0.20
+		strongSignal = true
 		signals = append(signals, "Connection reset (TE parser confusion)")
 	}
 
-	if confidence > 1.0 {
-		confidence = 1.0
-	}
-
-	result.Suspicious = confidence >= d.confidenceThreshold
-	result.ResponseTimeDiff = comparison.TimingDiffMS
-
-	if result.Suspicious {
-		result.Reason = d.buildExplanation("Mixed-TE", confidence, signals)
-	} else {
-		result.Reason = fmt.Sprintf("Insufficient evidence (confidence: %.1f%% < %.1f%%)", confidence*100, d.confidenceThreshold*100)
-	}
-
-	return result
+	return finalizeResult(d, result, confidence, strongSignal, comparison, "Mixed-TE", signals)
 }
 
-// AnalyzeObfuscatedTE analyzes for obfuscated Transfer-Encoding header exploitation.
-// This variant uses non-standard TE header values (e.g., "cow") to bypass proxies.
+// ---------- Obfuscated TE ----------
+
 func (d *Detector) AnalyzeObfuscatedTE(target string, comparison *models.BaselineComparison) *models.ScanResult {
 	result := &models.ScanResult{
 		Target:           target,
@@ -214,90 +222,69 @@ func (d *Detector) AnalyzeObfuscatedTE(target string, comparison *models.Baselin
 
 	confidence := 0.0
 	signals := []string{}
+	strongSignal := false
 
-	// Signal 1: Status code changed to 400 (Bad Request)
 	if comparison.StatusCodeChanged && comparison.NewStatusCode == 400 {
 		confidence += 0.25
+		strongSignal = true
 		signals = append(signals, "Backend returned 400 (obfuscated TE rejection or malformed request)")
 	}
 
-	// Signal 2: Status code changed to 5xx
 	if comparison.StatusCodeChanged && comparison.NewStatusCode >= 500 {
 		confidence += 0.35
+		strongSignal = true
 		signals = append(signals, "Backend returned 5xx error (TE obfuscation parser confusion)")
 	}
 
-	// Signal 3: Response timing significantly decreased
 	if comparison.TimingDiffMS < -30 {
 		confidence += 0.15
-		signals = append(signals, fmt.Sprintf("Response %d ms faster (obfuscated TE caused early rejection)", -comparison.TimingDiffMS))
+		signals = append(signals,
+			fmt.Sprintf("Response %d ms faster (obfuscated TE caused early rejection)", -comparison.TimingDiffMS))
 	}
 
-	// Signal 4: Connection closed unexpectedly
 	if comparison.ConnectionBehaviorChanged && comparison.NewConnectionClosed {
 		confidence += 0.20
+		strongSignal = true
 		signals = append(signals, "Server closed connection (TE obfuscation parser failure)")
 	}
 
-	// Signal 5: Body size significantly reduced
 	if comparison.BodyChanged && comparison.BodySizeDiff < -200 {
 		confidence += 0.15
-		signals = append(signals, fmt.Sprintf("Response body %d bytes smaller (obfuscated TE caused content absorption)", -comparison.BodySizeDiff))
+		signals = append(signals,
+			fmt.Sprintf("Response body %d bytes smaller (obfuscated TE caused content absorption)", -comparison.BodySizeDiff))
 	}
 
-	// Signal 6: Transfer-Encoding header removed
-	if _, exists := comparison.HeadersRemoved["Transfer-Encoding"]; exists {
+	if headerExistsCaseInsensitive(comparison.HeadersRemoved, "Transfer-Encoding") {
 		confidence += 0.10
 		signals = append(signals, "Transfer-Encoding header removed (backend rejected obfuscation)")
 	}
 
-	if confidence > 1.0 {
-		confidence = 1.0
-	}
-
-	result.Suspicious = confidence >= d.confidenceThreshold
-	result.ResponseTimeDiff = comparison.TimingDiffMS
-
-	if result.Suspicious {
-		result.Reason = d.buildExplanation("Obfuscated-TE", confidence, signals)
-	} else {
-		result.Reason = fmt.Sprintf("Insufficient evidence (confidence: %.1f%% < %.1f%%)", confidence*100, d.confidenceThreshold*100)
-	}
-
-	return result
+	return finalizeResult(d, result, confidence, strongSignal, comparison, "Obfuscated-TE", signals)
 }
 
-// buildExplanation creates a detailed explanation of the detection.
+// ---------- Explanation ----------
+
 func (d *Detector) buildExplanation(technique string, confidence float64, signals []string) string {
 	var explanation strings.Builder
 
-	explanation.WriteString(fmt.Sprintf("Potential %s vulnerability detected (confidence: %.1f%%)\n", technique, confidence*100))
+	explanation.WriteString(
+		fmt.Sprintf("Potential %s vulnerability detected (confidence: %.1f%%)\n", technique, confidence*100),
+	)
 	explanation.WriteString("Detection signals:\n")
 
-	for _, signal := range signals {
-		explanation.WriteString(fmt.Sprintf("  - %s\n", signal))
+	if len(signals) == 0 {
+		explanation.WriteString("  - Behavioral anomaly detected\n")
 	}
 
-	switch technique {
-	case "CL.TE":
-		explanation.WriteString("\nTechnique: Proxy trusts Content-Length, backend trusts Transfer-Encoding.\n")
-		explanation.WriteString("The server may have desynchronized request boundaries, allowing request smuggling.")
-	case "TE.CL":
-		explanation.WriteString("\nTechnique: Proxy trusts Transfer-Encoding, backend trusts Content-Length.\n")
-		explanation.WriteString("The server may have desynchronized request boundaries, allowing request smuggling.")
-	case "Mixed-TE":
-		explanation.WriteString("\nTechnique: Multiple Transfer-Encoding headers with different handling.\n")
-		explanation.WriteString("The server may interpret TE headers ambiguously, causing parser desynchronization.")
-	case "Obfuscated-TE":
-		explanation.WriteString("\nTechnique: Non-standard Transfer-Encoding header values bypass proxies.\n")
-		explanation.WriteString("Front-end and backend may handle obfuscated TE values differently, causing desynchronization.\n")
-		explanation.WriteString("Example obfuscations: 'cow', 'x-chunked', 'chunked;q=0.5' - allowing request smuggling.")
+	for _, s := range signals {
+		explanation.WriteString(fmt.Sprintf("  - %s\n", s))
 	}
 
 	return explanation.String()
 }
 
-// DetectionReport summarizes results from multiple detection attempts.
+// ---------- Report ----------
+
 type DetectionReport struct {
 	Target              string
 	TotalTests          int
@@ -308,7 +295,6 @@ type DetectionReport struct {
 	MostLikelyTechnique string
 }
 
-// GenerateReport creates a report from multiple scan results.
 func (d *Detector) GenerateReport(target string, results ...*models.ScanResult) *DetectionReport {
 	report := &DetectionReport{
 		Target:        target,
@@ -317,41 +303,22 @@ func (d *Detector) GenerateReport(target string, results ...*models.ScanResult) 
 		NonSuspicious: make([]*models.ScanResult, 0),
 	}
 
+	highest := 0.0
+
 	for _, result := range results {
 		if result.Suspicious {
 			report.Vulnerable++
 			report.Suspicious = append(report.Suspicious, result)
+
+			if result.Confidence > highest {
+				highest = result.Confidence
+				report.HighestConfidence = highest
+				report.MostLikelyTechnique = result.Technique
+			}
 		} else {
 			report.NonSuspicious = append(report.NonSuspicious, result)
 		}
 	}
 
-	if report.Vulnerable > 0 {
-		report.MostLikelyTechnique = report.Suspicious[0].Technique
-	}
-
 	return report
-}
-
-// String returns a formatted detection report.
-func (r *DetectionReport) String() string {
-	var output strings.Builder
-
-	output.WriteString(fmt.Sprintf("=== DETECTION REPORT ===\n"))
-	output.WriteString(fmt.Sprintf("Target: %s\n", r.Target))
-	output.WriteString(fmt.Sprintf("Tests conducted: %d\n", r.TotalTests))
-	output.WriteString(fmt.Sprintf("Vulnerable techniques: %d\n\n", r.Vulnerable))
-
-	if r.Vulnerable > 0 {
-		output.WriteString("VULNERABLE FINDINGS:\n")
-		for i, result := range r.Suspicious {
-			output.WriteString(fmt.Sprintf("\n%d. %s\n", i+1, result.Technique))
-			output.WriteString(result.Reason)
-			output.WriteString("\n")
-		}
-	} else {
-		output.WriteString("No vulnerabilities detected.\n")
-	}
-
-	return output.String()
 }
