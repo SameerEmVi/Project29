@@ -488,3 +488,35 @@ func (sc *Scanner) Summary() string {
 
 	return summary.String()
 }
+
+// RunFullScan is a convenience wrapper that configures and runs a full scan.
+func RunFullScan(target string, port int, useTLS, insecure bool, confidence float64, aiProvider ai.Provider) error {
+	s := NewScanner(target, port)
+	s.SetConfidenceThreshold(confidence)
+	if useTLS {
+		s.SetTLS(true)
+		if insecure {
+			s.SetInsecureTLS(true)
+		}
+	}
+	if aiProvider != nil {
+		s.SetAIProvider(aiProvider)
+	}
+
+	if err := s.Run(); err != nil {
+		return err
+	}
+
+	s.PrintReport()
+
+	fmt.Printf("\n%s\n", s.Summary())
+
+	if s.IsVulnerable() {
+		fmt.Println("\n[!] VULNERABLE SERVER DETECTED")
+		fmt.Printf("[!] Most likely technique: %s\n", s.GetMostLikelyTechnique())
+	} else {
+		fmt.Println("\n[✓] No vulnerabilities detected")
+	}
+
+	return nil
+}

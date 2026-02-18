@@ -185,51 +185,17 @@ func main() {
 			fmt.Printf("============================================================\n")
 		}
 
-		// Use temporary variables to pass addresses to existing helpers
+		// Use temporary variables for this iteration
 		t := host
 		pp := p
 		thttps := useTLS
 
-		runStandardScanner(&t, &pp, confidence, &thttps, insecure, aiProvider)
-	}
-}
-
-func runStandardScanner(target *string, port *int, confidence *float64, https *bool, insecure *bool, aiProvider ai.Provider) {
-	// PHASE 5: SCANNER ENGINE
-	// Create and configure scanner
-	s := scanner.NewScanner(*target, *port)
-	s.SetConfidenceThreshold(*confidence)
-
-	if *https {
-		s.SetTLS(true)
-		if *insecure {
-			s.SetInsecureTLS(true)
+		if err := scanner.RunFullScan(t, pp, thttps, *insecure, *confidence, aiProvider); err != nil {
+			log.Fatalf("[!] Scan failed for %s: %v", t, err)
 		}
 	}
-
-	// Set AI provider if enabled
-	if aiProvider != nil {
-		s.SetAIProvider(aiProvider)
-	}
-
-	// Run the full scan
-	if err := s.Run(); err != nil {
-		log.Fatalf("[!] Scan failed: %v\n", err)
-	}
-
-	// Print the report
-	s.PrintReport()
-
-	// Print summary
-	fmt.Printf("\n%s\n", s.Summary())
-
-	// Exit with appropriate code
-	if s.IsVulnerable() {
-		fmt.Println("\n[!] VULNERABLE SERVER DETECTED")
-		fmt.Printf("[!] Most likely technique: %s\n", s.GetMostLikelyTechnique())
-	} else {
-		fmt.Println("\n[✓] No vulnerabilities detected")
-	}
 }
+
+
 
 
