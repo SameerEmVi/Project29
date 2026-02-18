@@ -70,6 +70,31 @@ func (g *Generator) GenerateBaseline() string {
     return buf.String()
 }
 
+// Convenience wrappers for Generator to create specific payloads.
+func (g *Generator) GenerateCLTEPayload(smoggledBody string) (string, error) {
+    if smoggledBody == "" {
+        return "", fmt.Errorf("smuggled body cannot be empty")
+    }
+    return GenerateCLTE(g.buildBaseRequest(), smoggledBody), nil
+}
+
+func (g *Generator) GenerateTECLPayload(smoggledBody string) (string, error) {
+    if smoggledBody == "" {
+        return "", fmt.Errorf("smuggled body cannot be empty")
+    }
+    return GenerateTECL(g.buildBaseRequest(), smoggledBody), nil
+}
+
+func (g *Generator) GenerateObfuscatedTEPayload(smoggledBody string, obfuscation string) (string, error) {
+    if smoggledBody == "" {
+        return "", fmt.Errorf("smuggled body cannot be empty")
+    }
+    if obfuscation == "" {
+        return "", fmt.Errorf("obfuscation value cannot be empty")
+    }
+    return GenerateObfuscatedTE(g.buildBaseRequest(), smoggledBody, obfuscation), nil
+}
+
 // ---------- Helpers ----------
 
 func buildChunkedPrefix() string {
