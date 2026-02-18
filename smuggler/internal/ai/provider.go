@@ -1,24 +1,44 @@
 package ai
 
-// Provider is an interface for different AI backends (OpenAI, Ollama, etc.)
+import "context"
+
+// Provider defines a common interface for AI backends
+// (OpenAI, Ollama, future local models, etc.)
 type Provider interface {
-	// AnalyzeResponses analyzes HTTP responses for smuggling patterns
-	AnalyzeResponses(baseline, testResponse map[string]interface{}, testType string) (*AnalysisResult, error)
 
-	// SuggestPayloads recommends attack payloads based on results
-	SuggestPayloads(targetInfo map[string]string, previousResults map[string]interface{}) ([]*PayloadSuggestion, error)
+	// AnalyzeResponses analyzes HTTP responses for smuggling patterns.
+	AnalyzeResponses(
+		ctx context.Context,
+		baseline, testResponse map[string]interface{},
+		testType string,
+	) (*AnalysisResult, error)
 
-	// GenerateReport creates a detailed vulnerability report
-	GenerateReport(scanResults map[string]interface{}, allResponses []map[string]interface{}) (string, error)
+	// SuggestPayloads recommends attack payload strategies.
+	SuggestPayloads(
+		ctx context.Context,
+		targetInfo map[string]string,
+		previousResults map[string]interface{},
+	) ([]*PayloadSuggestion, error)
 
-	// IdentifyTechnique determines the most likely smuggling method
-	IdentifyTechnique(allTestResults map[string]map[string]interface{}) (string, float64, error)
+	// GenerateReport creates a vulnerability report.
+	GenerateReport(
+		ctx context.Context,
+		scanResults map[string]interface{},
+		allResponses []map[string]interface{},
+	) (string, error)
 
-	// Name returns the provider name for logging
+	// IdentifyTechnique determines the most likely smuggling method.
+	IdentifyTechnique(
+		ctx context.Context,
+		allTestResults map[string]map[string]interface{},
+	) (string, float64, error)
+
+	// Name returns provider name (for logging/debugging).
 	Name() string
 }
 
-// Ensure both implementations satisfy the interface
+// Compile-time interface validation.
+// Ensures implementations always satisfy Provider.
 var (
 	_ Provider = (*AIAnalyzer)(nil)
 	_ Provider = (*OllamaAnalyzer)(nil)

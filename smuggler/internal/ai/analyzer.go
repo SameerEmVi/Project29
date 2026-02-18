@@ -1,20 +1,22 @@
 package ai
 
 import (
+	"context"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
-// AIAnalyzer handles OpenAI integration for intelligent analysis
 type AIAnalyzer struct {
 	apiKey string
 	model  string
+	client *http.Client
 }
 
-// AnalysisResult contains AI's assessment of vulnerability
 type AnalysisResult struct {
 	IsVulnerable      bool     `json:"is_vulnerable"`
 	Techniques        []string `json:"techniques"`
@@ -24,7 +26,6 @@ type AnalysisResult struct {
 	Recommendations   []string `json:"recommendations"`
 }
 
-// PayloadSuggestion contains AI-recommended attack payload
 type PayloadSuggestion struct {
 	Technique       string `json:"technique"`
 	Description     string `json:"description"`
@@ -33,22 +34,30 @@ type PayloadSuggestion struct {
 	Rationale       string `json:"rationale"`
 }
 
-// NewAIAnalyzer creates a new AI analyzer with OpenAI client
 func NewAIAnalyzer(apiKey string) *AIAnalyzer {
 	return &AIAnalyzer{
 		apiKey: apiKey,
 		model:  "gpt-3.5-turbo",
+		client: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
-// Name returns the provider name
 func (a *AIAnalyzer) Name() string {
 	return "OpenAI"
 }
 
-// AnalyzeResponses uses AI to identify smuggling patterns
-func (a *AIAnalyzer) AnalyzeResponses(baseline, testResponse map[string]interface{}, testType string) (*AnalysisResult, error) {
-	prompt := fmt.Sprintf(`Analyze if these HTTP responses indicate request smuggling:
+// ---------- PUBLIC METHODS ----------
+
+func (a *AIAnalyzer) AnalyzeResponses(
+	ctx context.Context,
+	baseline, testResponse map[string]interface{},
+	testType string,
+) (*AnalysisResult, error) {
+
+	prompt := fmt.Sprintf(
+		`Analyze if these HTTP responses indicate request smuggling:
 
 Test: %s
 Baseline Status: %v, Body: %v bytes
@@ -58,145 +67,111 @@ Respond with valid JSON only:
 {"is_vulnerable": bool, "techniques": [], "confidence": 0.0, "reasoning": "", "suspicious_signals": [], "recommendations": []}`,
 		testType,
 		baseline["status"], baseline["body_len"],
-		testResponse["status"], testResponse["body_len"])
+		testResponse["status"], testResponse["body_len"],
+	)
 
 	result := &AnalysisResult{}
-	if err := a.callOpenAI(prompt, result); err != nil {
-		return nil, err
-	}
-
-	return result, nil
+	err := a.callOpenAIJSON(prompt, result)
+	return result, err
 }
 
-// SuggestPayloads uses AI to recommend attack strategies
-func (a *AIAnalyzer) SuggestPayloads(targetInfo map[string]string, previousResults map[string]interface{}) ([]*PayloadSuggestion, error) {
-	prompt := fmt.Sprintf(`Given target %v and previous results %v, suggest the top 2 HTTP Request Smuggling attack payloads.
-Respond with JSON array only: [{"technique": "", "description": "", "payload_strategy": "", "priority": "", "rationale": ""}]`,
-		targetInfo, previousResults)
+func (a *AIAnalyzer) SuggestPayloads(
+	ctx context.Context,
+	targetInfo map[string]string,
+	previousResults map[string]interface{},
+) ([]*PayloadSuggestion, error) {
 
-	var suggestions []*PayloadSuggestion
-	if err := a.callOpenAI(prompt, &suggestions); err != nil {
-		return nil, err
-	}
+	prompt := fmt.Sprintf(
+		`Given target %v and previous results %v, suggest the top 2 HTTP Request Smuggling attack payloads.
+Respond with JSON array only.`,
+		targetInfo, previousResults,
+	)
 
-	return suggestions, nil
+	var out []*PayloadSuggestion
+	err := a.callOpenAIJSON(prompt, &out)
+	return out, err
 }
 
-// GenerateReport uses AI to create a detailed vulnerability report
-func (a *AIAnalyzer) GenerateReport(scanResults map[string]interface{}, allResponses []map[string]interface{}) (string, error) {
-	prompt := fmt.Sprintf(`Create a brief security assessment for HTTP Request Smuggling scan: %v`, scanResults)
+func (a *AIAnalyzer) GenerateReport(
+	ctx context.Context,
+	scanResults map[string]interface{},
+	allResponses []map[string]interface{},
+) (string, error) {
+
+	prompt := fmt.Sprintf(
+		`Create a brief security assessment for HTTP Request Smuggling scan: %v`,
+		scanResults,
+	)
 
 	return a.callOpenAIString(prompt)
 }
 
-// IdentifyTechnique uses AI to determine most likely smuggling method
-func (a *AIAnalyzer) IdentifyTechnique(allTestResults map[string]map[string]interface{}) (string, float64, error) {
-	prompt := fmt.Sprintf(`Based on test results %v, identify the most likely smuggling technique.
-Respond with JSON only: {"most_likely_technique": "CL.TE", "confidence": 0.85}`, allTestResults)
+func (a *AIAnalyzer) IdentifyTechnique(
+	ctx context.Context,
+	allTestResults map[string]map[string]interface{},
+) (string, float64, error) {
+
+	prompt := fmt.Sprintf(
+		`Based on test results %v, identify the most likely smuggling technique.
+Respond with JSON only: {"most_likely_technique":"CL.TE","confidence":0.85}`,
+		allTestResults,
+	)
 
 	type Result struct {
 		Technique  string  `json:"most_likely_technique"`
 		Confidence float64 `json:"confidence"`
 	}
 
-	result := &Result{}
-	if err := a.callOpenAI(prompt, result); err != nil {
+	r := &Result{}
+	err := a.callOpenAIJSON(prompt, r)
+	if err != nil {
 		return "", 0, err
 	}
 
-	return result.Technique, result.Confidence, nil
+	return r.Technique, r.Confidence, nil
 }
 
-// callOpenAI makes a request to OpenAI API and parses JSON response
-func (a *AIAnalyzer) callOpenAI(prompt string, dest interface{}) error {
-	payload := map[string]interface{}{
-		"model": a.model,
-		"messages": []map[string]string{
-			{
-				"role":    "system",
-				"content": "You are a security analyst. Respond with valid JSON only.",
-			},
-			{
-				"role":    "user",
-				"content": prompt,
-			},
-		},
-		"temperature": 0.3,
-		"max_tokens":  500,
-	}
+// ---------- INTERNAL CORE ----------
 
-	data, err := json.Marshal(payload)
+func (a *AIAnalyzer) callOpenAIJSON(prompt string, dest interface{}) error {
+
+	raw, err := a.callOpenAI(prompt, true)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", strings.NewReader(string(data)))
-	if err != nil {
-		return err
-	}
+	raw = cleanJSON(raw)
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.apiKey))
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
-	}
-
-	var apiResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return fmt.Errorf("failed to parse API response: %w", err)
-	}
-
-	if apiResp.Error.Message != "" {
-		return fmt.Errorf("API error: %s", apiResp.Error.Message)
-	}
-
-	if len(apiResp.Choices) == 0 {
-		return fmt.Errorf("no response from AI")
-	}
-
-	content := apiResp.Choices[0].Message.Content
-	if err := json.Unmarshal([]byte(content), dest); err != nil {
-		return fmt.Errorf("failed to parse AI response: %w", err)
+	if err := json.Unmarshal([]byte(raw), dest); err != nil {
+		return fmt.Errorf("failed to parse AI JSON: %w", err)
 	}
 
 	return nil
 }
 
-// callOpenAIString makes a request and returns raw string response
 func (a *AIAnalyzer) callOpenAIString(prompt string) (string, error) {
+	return a.callOpenAI(prompt, false)
+}
+
+func (a *AIAnalyzer) callOpenAI(prompt string, strictJSON bool) (string, error) {
+
+	if a.apiKey == "" {
+		return "", fmt.Errorf("missing API key")
+	}
+
+	systemMsg := "You are a security analyst."
+	if strictJSON {
+		systemMsg = "You are a security analyst. Respond with valid JSON only."
+	}
+
 	payload := map[string]interface{}{
 		"model": a.model,
 		"messages": []map[string]string{
-			{
-				"role":    "system",
-				"content": "You are a security expert.",
-			},
-			{
-				"role":    "user",
-				"content": prompt,
-			},
+			{"role": "system", "content": systemMsg},
+			{"role": "user", "content": prompt},
 		},
-		"temperature": 0.5,
-		"max_tokens":  1000,
+		"temperature": 0.3,
+		"max_tokens":  700,
 	}
 
 	data, err := json.Marshal(payload)
@@ -204,23 +179,27 @@ func (a *AIAnalyzer) callOpenAIString(prompt string) (string, error) {
 		return "", err
 	}
 
-	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", strings.NewReader(string(data)))
+	req, err := http.NewRequest(
+		"POST",
+		"https://api.openai.com/v1/chat/completions",
+		bytes.NewReader(data),
+	)
 	if err != nil {
 		return "", err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.apiKey))
+	req.Header.Set("Authorization", "Bearer "+a.apiKey)
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := a.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("API request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -230,22 +209,28 @@ func (a *AIAnalyzer) callOpenAIString(prompt string) (string, error) {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return "", fmt.Errorf("failed to parse API response: %w", err)
-	}
-
-	if apiResp.Error.Message != "" {
-		return "", fmt.Errorf("API error: %s", apiResp.Error.Message)
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return "", fmt.Errorf("failed to decode API response: %w", err)
 	}
 
 	if len(apiResp.Choices) == 0 {
-		return "", fmt.Errorf("no response from AI")
+		return "", fmt.Errorf("no AI response")
 	}
 
 	return apiResp.Choices[0].Message.Content, nil
+}
+
+// ---------- HELPERS ----------
+
+// removes ```json wrappers
+func cleanJSON(in string) string {
+	in = strings.TrimSpace(in)
+
+	in = strings.TrimPrefix(in, "```json")
+	in = strings.TrimPrefix(in, "```")
+	in = strings.TrimSuffix(in, "```")
+
+	return strings.TrimSpace(in)
 }

@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -146,7 +147,7 @@ func (sc *Scanner) runAIAnalysis(testType string, baseline, test *models.HTTPRes
 		"headers":  len(test.Headers),
 	}
 
-	aiResult, err := sc.aiProvider.AnalyzeResponses(baseline_map, test_map, testType)
+	aiResult, err := sc.aiProvider.AnalyzeResponses(context.Background(), baseline_map, test_map, testType)
 	if err != nil {
 		fmt.Printf("    [AI Analysis Error: %v]\n", err)
 		return

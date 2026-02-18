@@ -1,276 +1,175 @@
 package ai
 
 import (
+	"context"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 )
 
-// OllamaAnalyzer handles Ollama (local LLM) integration for intelligent analysis
 type OllamaAnalyzer struct {
-	endpoint string // e.g., "http://localhost:11434"
-	model    string // e.g., "llama2", "mistral", "neural-chat"
+	endpoint string
+	model    string
+	client   *http.Client
 }
 
-// NewOllamaAnalyzer creates a new Ollama analyzer
 func NewOllamaAnalyzer(endpoint, model string) *OllamaAnalyzer {
 	if endpoint == "" {
-		endpoint = "http://localhost:11434" // Ollama default
+		endpoint = "http://localhost:11434"
 	}
 	if model == "" {
-		model = "llama2" // Ollama default model
+		model = "llama2"
 	}
+
 	return &OllamaAnalyzer{
 		endpoint: endpoint,
 		model:    model,
+		client: &http.Client{
+			Timeout: 60 * time.Second,
+		},
 	}
 }
 
-// Name returns the provider name
 func (o *OllamaAnalyzer) Name() string {
 	return fmt.Sprintf("Ollama (%s)", o.model)
 }
 
-// AnalyzeResponses uses Ollama to identify smuggling patterns
-func (o *OllamaAnalyzer) AnalyzeResponses(baseline, testResponse map[string]interface{}, testType string) (*AnalysisResult, error) {
+// ---------- PUBLIC ----------
+
+func (o *OllamaAnalyzer) AnalyzeResponses(
+	ctx context.Context,
+	baseline, testResponse map[string]interface{},
+	testType string,
+) (*AnalysisResult, error) {
+
 	prompt := fmt.Sprintf(`You are a security expert analyzing HTTP responses for request smuggling vulnerabilities.
 
 Test Type: %s
 Baseline: Status=%v, Body=%v bytes
 Test Response: Status=%v, Body=%v bytes
 
-Output ONLY this exact JSON format (no markdown, no code blocks, no explanation, no comments):
-{
-"is_vulnerable": true,
-"techniques": ["CL.TE"],
-"confidence": 0.75,
-"reasoning": "Explanation here",
-"suspicious_signals": ["signal1", "signal2"],
-"recommendations": ["action1", "action2"]
-}`,
+Output ONLY valid JSON.`,
 		testType,
 		baseline["status"], baseline["body_len"],
 		testResponse["status"], testResponse["body_len"])
 
 	result := &AnalysisResult{}
-	if err := o.callOllama(prompt, result); err != nil {
-		return nil, err
-	}
-
-	return result, nil
+	err := o.callOllamaJSON(prompt, result)
+	return result, err
 }
 
-// SuggestPayloads uses Ollama to recommend attack strategies
-func (o *OllamaAnalyzer) SuggestPayloads(targetInfo map[string]string, previousResults map[string]interface{}) ([]*PayloadSuggestion, error) {
-	prompt := fmt.Sprintf(`You are a penetration testing expert. Suggest HTTP Request Smuggling attack payloads.
+func (o *OllamaAnalyzer) SuggestPayloads(
+	ctx context.Context,
+	targetInfo map[string]string,
+	previousResults map[string]interface{},
+) ([]*PayloadSuggestion, error) {
+
+	prompt := fmt.Sprintf(
+		`Suggest HTTP Request Smuggling payloads.
 Target: %v
 Previous Results: %v
+Output JSON array only.`,
+		targetInfo, previousResults,
+	)
 
-Output ONLY this exact JSON format (no markdown, no code blocks, no explanation, no comments):
-[
-{"technique": "CL.TE", "description": "Content-Length vs Transfer-Encoding", "payload_strategy": "strategy_here", "priority": "high", "rationale": "rationale_here"}
-]`,
-		targetInfo, previousResults)
-
-	var suggestions []*PayloadSuggestion
-	if err := o.callOllama(prompt, &suggestions); err != nil {
-		return nil, err
-	}
-
-	return suggestions, nil
+	var out []*PayloadSuggestion
+	err := o.callOllamaJSON(prompt, &out)
+	return out, err
 }
 
-// GenerateReport uses Ollama to create a detailed vulnerability report
-func (o *OllamaAnalyzer) GenerateReport(scanResults map[string]interface{}, allResponses []map[string]interface{}) (string, error) {
-	prompt := fmt.Sprintf(`Create a brief security assessment for HTTP Request Smuggling vulnerability scan.
-Results: %v
+func (o *OllamaAnalyzer) GenerateReport(
+	ctx context.Context,
+	scanResults map[string]interface{},
+	allResponses []map[string]interface{},
+) (string, error) {
 
-Provide a concise report focusing on findings and recommendations.`, scanResults)
+	prompt := fmt.Sprintf(
+		`Create a brief security assessment for HTTP Request Smuggling scan: %v`,
+		scanResults,
+	)
 
 	return o.callOllamaString(prompt)
 }
 
-// IdentifyTechnique uses Ollama to determine most likely smuggling method
-func (o *OllamaAnalyzer) IdentifyTechnique(allTestResults map[string]map[string]interface{}) (string, float64, error) {
-	prompt := fmt.Sprintf(`Analyze HTTP Request Smuggling test results and identify the most likely vulnerability technique.
-Results: %v
+func (o *OllamaAnalyzer) IdentifyTechnique(
+	ctx context.Context,
+	allTestResults map[string]map[string]interface{},
+) (string, float64, error) {
 
-Output ONLY this exact JSON (no markdown, no code blocks, no explanation, no comments):
-{"most_likely_technique": "CL.TE", "confidence": 0.85}`, allTestResults)
+	prompt := fmt.Sprintf(
+		`Identify most likely request smuggling technique.
+Results: %v
+Return JSON only: {"most_likely_technique":"CL.TE","confidence":0.85}`,
+		allTestResults,
+	)
 
 	type Result struct {
 		Technique  string  `json:"most_likely_technique"`
 		Confidence float64 `json:"confidence"`
 	}
 
-	result := &Result{}
-	if err := o.callOllama(prompt, result); err != nil {
+	r := &Result{}
+	err := o.callOllamaJSON(prompt, r)
+	if err != nil {
 		return "", 0, err
 	}
 
-	return result.Technique, result.Confidence, nil
+	return r.Technique, r.Confidence, nil
 }
 
-// cleanupJSON removes common formatting issues from LLM-generated JSON
-// Handles: comments, trailing commas, extra whitespace
-func cleanupJSON(jsonStr string) string {
-	var result []byte
-	inString := false
-	escape := false
+// ---------- CORE ----------
 
-	for i := 0; i < len(jsonStr); i++ {
-		ch := jsonStr[i]
+func (o *OllamaAnalyzer) callOllamaJSON(prompt string, dest interface{}) error {
 
-		// Track if we're inside a string
-		if ch == '"' && !escape {
-			inString = !inString
-			result = append(result, ch)
-			escape = false
-			continue
-		}
-
-		// Handle escape sequences
-		if ch == '\\' && inString {
-			escape = !escape
-			result = append(result, ch)
-			continue
-		}
-		escape = false
-
-		// Skip comments outside strings (// style)
-		if !inString && ch == '/' && i+1 < len(jsonStr) && jsonStr[i+1] == '/' {
-			// Skip until end of line
-			for i < len(jsonStr) && jsonStr[i] != '\n' {
-				i++
-			}
-			continue
-		}
-
-		// Skip C-style comments /* */
-		if !inString && ch == '/' && i+1 < len(jsonStr) && jsonStr[i+1] == '*' {
-			i += 2
-			for i < len(jsonStr)-1 {
-				if jsonStr[i] == '*' && jsonStr[i+1] == '/' {
-					i += 2
-					break
-				}
-				i++
-			}
-			continue
-		}
-
-		// Remove trailing commas before } or ]
-		if ch == ',' {
-			// Look ahead for closing bracket
-			j := i + 1
-			for j < len(jsonStr) && (jsonStr[j] == ' ' || jsonStr[j] == '\n' || jsonStr[j] == '\t' || jsonStr[j] == '\r') {
-				j++
-			}
-			if j < len(jsonStr) && (jsonStr[j] == '}' || jsonStr[j] == ']') {
-				// Skip this comma
-				continue
-			}
-		}
-
-		result = append(result, ch)
-	}
-
-	return string(result)
-}
-
-// callOllama makes a request to Ollama API and parses JSON response
-func (o *OllamaAnalyzer) callOllama(prompt string, dest interface{}) error {
-	payload := map[string]interface{}{
-		"model":  o.model,
-		"prompt": prompt,
-		"stream": false,
-	}
-
-	data, err := json.Marshal(payload)
+	raw, err := o.callOllama(prompt)
 	if err != nil {
 		return err
 	}
 
-	// Ollama API endpoint
-	url := fmt.Sprintf("%s/api/generate", o.endpoint)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("failed to connect to Ollama at %s: %w", o.endpoint, err)
-	}
-	defer resp.Body.Close()
+	raw = extractJSON(raw)
+	raw = cleanupJSON(raw)
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("Ollama API error %d: %s", resp.StatusCode, string(body))
-	}
-
-	var apiResp struct {
-		Response string `json:"response"`
-		Error    string `json:"error"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return fmt.Errorf("failed to parse Ollama response: %w", err)
-	}
-
-	if apiResp.Error != "" {
-		return fmt.Errorf("Ollama error: %s", apiResp.Error)
-	}
-
-	// Extract JSON from response
-	content := apiResp.Response
-	
-	// Try to find JSON in the response
-	startIdx := -1
-	for i := 0; i < len(content); i++ {
-		if content[i] == '{' || content[i] == '[' {
-			startIdx = i
-			break
-		}
-	}
-
-	if startIdx == -1 {
-		return fmt.Errorf("no JSON found in Ollama response: %s", content)
-	}
-
-	jsonStr := content[startIdx:]
-	
-	// Clean up JSON: remove comments, trailing commas, etc.
-	jsonStr = cleanupJSON(jsonStr)
-	
-	if err := json.Unmarshal([]byte(jsonStr), dest); err != nil {
-		return fmt.Errorf("failed to parse JSON from Ollama: %w\nCleaned response: %s", err, jsonStr)
+	if err := json.Unmarshal([]byte(raw), dest); err != nil {
+		return fmt.Errorf("failed to parse JSON from Ollama: %w\nResponse: %s", err, raw)
 	}
 
 	return nil
 }
 
-// callOllamaString makes a request and returns raw string response
 func (o *OllamaAnalyzer) callOllamaString(prompt string) (string, error) {
+	return o.callOllama(prompt)
+}
+
+func (o *OllamaAnalyzer) callOllama(prompt string) (string, error) {
+
 	payload := map[string]interface{}{
 		"model":  o.model,
 		"prompt": prompt,
 		"stream": false,
 	}
 
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
+	data, _ := json.Marshal(payload)
 
-	// Ollama API endpoint
 	url := fmt.Sprintf("%s/api/generate", o.endpoint)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
+
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := o.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to connect to Ollama at %s: %w", o.endpoint, err)
+		return "", fmt.Errorf("failed to connect to Ollama: %w", err)
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("Ollama API error %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("Ollama API error %d: %s",
+			resp.StatusCode, string(body))
 	}
 
 	var apiResp struct {
@@ -278,7 +177,7 @@ func (o *OllamaAnalyzer) callOllamaString(prompt string) (string, error) {
 		Error    string `json:"error"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+	if err := json.Unmarshal(body, &apiResp); err != nil {
 		return "", fmt.Errorf("failed to parse Ollama response: %w", err)
 	}
 
@@ -287,4 +186,75 @@ func (o *OllamaAnalyzer) callOllamaString(prompt string) (string, error) {
 	}
 
 	return apiResp.Response, nil
+}
+
+// ---------- HELPERS ----------
+
+// extracts first balanced JSON block
+func extractJSON(input string) string {
+
+	input = strings.TrimSpace(input)
+	input = strings.TrimPrefix(input, "```json")
+	input = strings.TrimPrefix(input, "```")
+	input = strings.TrimSuffix(input, "```")
+
+	start := strings.IndexAny(input, "{[")
+	if start == -1 {
+		return input
+	}
+
+	depth := 0
+
+	for i := start; i < len(input); i++ {
+		switch input[i] {
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+			if depth == 0 {
+				return input[start : i+1]
+			}
+		}
+	}
+
+	return input[start:]
+}
+
+// removes trailing commas safely
+func cleanupJSON(s string) string {
+
+	var out []byte
+	inString := false
+	escape := false
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+
+		if ch == '"' && !escape {
+			inString = !inString
+		}
+
+		if ch == '\\' && inString {
+			escape = !escape
+		} else {
+			escape = false
+		}
+
+		if !inString && ch == ',' {
+			j := i + 1
+			for j < len(s) &&
+				(s[j] == ' ' || s[j] == '\n' ||
+					s[j] == '\t' || s[j] == '\r') {
+				j++
+			}
+			if j < len(s) &&
+				(s[j] == '}' || s[j] == ']') {
+				continue
+			}
+		}
+
+		out = append(out, ch)
+	}
+
+	return string(out)
 }
