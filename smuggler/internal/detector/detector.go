@@ -54,7 +54,7 @@ func finalizeResult(
 		confidence = 1.0
 	}
 
-	result.Confidence = confidence
+	result.ConfidenceScore = confidence
 	result.Suspicious = strongSignal && confidence >= d.confidenceThreshold
 	result.ResponseTimeDiff = comparison.TimingDiffMS
 
@@ -310,8 +310,8 @@ func (d *Detector) GenerateReport(target string, results ...*models.ScanResult) 
 			report.Vulnerable++
 			report.Suspicious = append(report.Suspicious, result)
 
-			if result.Confidence > highest {
-				highest = result.Confidence
+			if result.ConfidenceScore > highest {
+				highest = result.ConfidenceScore
 				report.HighestConfidence = highest
 				report.MostLikelyTechnique = result.Technique
 			}
@@ -321,4 +321,34 @@ func (d *Detector) GenerateReport(target string, results ...*models.ScanResult) 
 	}
 
 	return report
+}
+
+// String returns a human-readable representation of the detection report.
+func (r *DetectionReport) String() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Detection report for %s\n", r.Target)
+	fmt.Fprintf(&b, "Total tests: %d\n", r.TotalTests)
+	fmt.Fprintf(&b, "Vulnerable: %d\n", r.Vulnerable)
+	fmt.Fprintf(&b, "Highest confidence: %.2f\n", r.HighestConfidence)
+	if r.MostLikelyTechnique != "" {
+		fmt.Fprintf(&b, "Most likely technique: %s\n", r.MostLikelyTechnique)
+	}
+
+	if len(r.Suspicious) > 0 {
+		b.WriteString("\nSuspicious results:\n")
+		for _, s := range r.Suspicious {
+			b.WriteString(s.PrettyString())
+			b.WriteString("\n")
+		}
+	}
+
+	if len(r.NonSuspicious) > 0 {
+		b.WriteString("\nNon-suspicious results:\n")
+		for _, s := range r.NonSuspicious {
+			b.WriteString(s.PrettyString())
+			b.WriteString("\n")
+		}
+	}
+
+	return b.String()
 }
